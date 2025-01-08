@@ -1,0 +1,95 @@
+name: Mirror Repository from Bitbucket to GitHub
+
+on:
+  workflow_call:
+    inputs:
+      bitbucket_repo_url:
+        description: "URL of the Bitbucket repository"
+        required: true
+        type: string
+      github_repo_name:
+        description: "Name of the destination GitHub repository"
+        required: true
+        type: string
+      github_org_name:
+        description: "Name of the GitHub organization"
+        required: true
+        type: string
+      github_token:
+        description: "GitHub Personal Access Token (PAT)"
+        required: true
+        type: string
+      bitbucket_username:
+        description: "Bitbucket username with access to the repo"
+        required: true
+        type: string
+      bitbucket_app_password:
+        description: "Bitbucket App Password"
+        required: true
+        type: string
+
+jobs:
+  mirror-repo:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the Bitbucket repository
+      - name: Clone Bitbucket Repository
+        run: |
+          git clone --mirror https://${{ inputs.bitbucket_username }}:${{ inputs.bitbucket_app_password }}@${{ inputs.bitbucket_repo_url }} repo-mirror
+        env:
+          GIT_TERMINAL_PROMPT: 0
+
+      # Step 2: Create a GitHub repository if it doesn't already exist
+      - name: Create GitHub Repository
+        id: create_github_repo
+        uses: octokit/request-action@v2.x
+        with:
+          route: POST /orgs/${{ inputs.github_org_name }}/repos
+          token: ${{ inputs.github_token }}
+          repo: |
+            {
+              "name": "${{ inputs.github_repo_name }}",
+              "private": true
+            }
+        continue-on-error: true # This allows the workflow to proceed if the repo already exists
+
+      # Step 3: Push to GitHub
+      - name: Push Repository to GitHub
+        run: |
+          cd repo-mirror
+          git remote add github https://x-access-token:${{ inputs.github_token }}@github.com/${{ inputs.github_org_name }}/${{ inputs.github_repo_name }}.git
+          git push --mirror github
+
+      # Step 4: Migrate Bitbucket Branch Permissions (Custom API script)
+      - name: Migrate Branch Permissions
+        run: |
+          python3 migrate_permissions.py --bitbucket-repo-url="${{ inputs.bitbucket_repo_url }}" \
+                                         --github-repo-name="${{ inputs.github_repo_name }}" \
+                                         --github-org-name="${{ inputs.github_org_name }}"
+        env:
+          BITBUCKET_USERNAME: ${{ inputs.bitbucket_username }}
+          BITBUCKET_APP_PASSWORD: ${{ inputs.bitbucket_app_password }}
+          GITHUB_TOKEN: ${{ inputs.github_token }}
+
+      # Step 5: Migrate Hooks (Custom API script)
+      - name: Migrate Repository Hooks
+        run: |
+          python3 migrate_hooks.py --bitbucket-repo-url="${{ inputs.bitbucket_repo_url }}" \
+                                   --github-repo-name="${{ inputs.github_repo_name }}" \
+                                   --github-org-name="${{ inputs.github_org_name }}"
+        env:
+          BITBUCKET_USERNAME: ${{ inputs.bitbucket_username }}
+          BITBUCKET_APP_PASSWORD: ${{ inputs.bitbucket_app_password }}
+          GITHUB_TOKEN: ${{ inputs.github_token }}
+
+      # Step 6: Configure Branch Protection Rules (Custom API script)
+      - name: Configure Branch Protection Rules
+        run: |
+          python3 configure_branch_rules.py --github-repo-name="${{ inputs.github_repo_name }}" \
+                                            --github-org-name="${{ inputs.github_org_name }}"
+        env:
+          GITHUB_TOKEN: ${{ inputs.github_token }}
+
+      # Clean up
+      - name: Clean Up Workspace
+        run: rm -rf repo-mirror
